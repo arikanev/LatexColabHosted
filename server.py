@@ -98,11 +98,16 @@ def _create_credential_url(git_url: str, token: str) -> str:
         if not parsed_url.scheme or not parsed_url.netloc:
             raise HTTPException(status_code=400, detail="Invalid Git URL format provided.")
 
+        # --- Extract clean hostname from netloc (strip potential user@ prefix) ---
+        hostname_part = parsed_url.netloc
+        if '@' in hostname_part:
+            hostname_part = hostname_part.split('@', 1)[-1] # Get the part after the first @
+
         # URL-encode the token
         encoded_token = quote(token, safe='')
 
-        # Construct netloc with username and *encoded* token
-        netloc = f"git:{encoded_token}@{parsed_url.netloc}"
+        # Construct netloc with username, *encoded* token, and *clean* hostname
+        netloc = f"git:{encoded_token}@{hostname_part}"
 
         credential_url = urlunparse((
             parsed_url.scheme,
