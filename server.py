@@ -162,20 +162,25 @@ def _parse_parameters_from_text(text: str) -> Dict[str, str]:
     if param_line:
         # Extract the part after '%parameters:'
         param_text = param_line.split('%parameters:', 1)[-1].strip()
-        # --- Added Debug Logging --- 
         logger.info(f"  Extracted param text: '{param_text}'")
-        # --- End Debug Logging --- 
-        # --- Key-value parsing regex remains the same ---
-        param_pairs = re.findall(r'([a-zA-Z0-9_]+)\\s*=\\s*([^,\\n]+)', param_text)
-        # --- Added Debug Logging --- 
-        logger.info(f"  Found param pairs: {param_pairs}")
-        # --- End Debug Logging --- 
-        for key, value in param_pairs:
-            # Strip potential extra spaces from value
-            params[key.strip()] = value.strip()
-    # --- Added Debug Logging --- 
+        # --- Key-value parsing: Split by comma first --- 
+        params_list = param_text.split(',')
+        logger.info(f"  Split param string into: {params_list}") # Log the split parts
+        for item in params_list:
+            item_stripped = item.strip()
+            if '=' in item_stripped:
+                # Split only on the first equals sign
+                key_value = item_stripped.split('=', 1)
+                if len(key_value) == 2:
+                    key = key_value[0].strip()
+                    value = key_value[1].strip()
+                    if key: # Ensure key is not empty
+                        params[key] = value
+                else:
+                    logger.warning(f"  Could not parse key-value pair from: '{item_stripped}'")
+            elif item_stripped: # Handle potential flag-like parameters without values?
+                 logger.warning(f"  Found parameter without '=': '{item_stripped}'") # Or treat as flag?
     logger.info(f"  Finished parsing. Result params: {params}")
-    # --- End Debug Logging --- 
     return params
 
 def _find_environments(content: str, env_name: str) -> List[Dict[str, Any]]:
