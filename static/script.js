@@ -102,8 +102,8 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // --- Added Client-Side Debug Logging ---
-        console.log("Sending to /process (first 500 chars):", contentToSend.substring(0, 500));
+        // --- Modified Client-Side Debug Logging (Log FULL content) ---
+        console.log("Sending to /process (Full content being sent):", contentToSend);
         // --- End Debug Logging ---
 
         showStatus('Processing AI prompts...');
