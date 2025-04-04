@@ -142,15 +142,40 @@ def _create_credential_url(git_url: str, token: str) -> str:
 
 def _parse_parameters_from_text(text: str) -> Dict[str, str]:
     """Parses parameters from a comment line like '%parameters: key=value, key2=value2'."""
+    # --- Added Debug Logging --- 
+    logger.info(f"Parsing parameters from text:\n{text}")
+    # --- End Debug Logging --- 
     params = {}
-    param_line_match = re.search(r'%\\s*parameters:\\s*(.*?)(?:\\n|$)', text, re.MULTILINE | re.IGNORECASE)
-    if param_line_match:
-        param_text = param_line_match.group(1).strip()
-        # More robust parsing for key=value pairs, allows spaces around '=' and ','
+    param_line = None
+    # --- Replace regex search with line iteration for robustness ---
+    lines = text.splitlines()
+    for line in lines:
+        stripped_line = line.strip()
+        # logger.info(f"  Checking line: '{stripped_line}'") # Uncomment if needed
+        if stripped_line.startswith('%parameters:'):
+            param_line = stripped_line
+            # --- Added Debug Logging --- 
+            logger.info(f"  Found potential param line: '{param_line}'")
+            # --- End Debug Logging --- 
+            break # Found the line, stop searching
+
+    if param_line:
+        # Extract the part after '%parameters:'
+        param_text = param_line.split('%parameters:', 1)[-1].strip()
+        # --- Added Debug Logging --- 
+        logger.info(f"  Extracted param text: '{param_text}'")
+        # --- End Debug Logging --- 
+        # --- Key-value parsing regex remains the same ---
         param_pairs = re.findall(r'([a-zA-Z0-9_]+)\\s*=\\s*([^,\\n]+)', param_text)
+        # --- Added Debug Logging --- 
+        logger.info(f"  Found param pairs: {param_pairs}")
+        # --- End Debug Logging --- 
         for key, value in param_pairs:
             # Strip potential extra spaces from value
             params[key.strip()] = value.strip()
+    # --- Added Debug Logging --- 
+    logger.info(f"  Finished parsing. Result params: {params}")
+    # --- End Debug Logging --- 
     return params
 
 def _find_environments(content: str, env_name: str) -> List[Dict[str, Any]]:
