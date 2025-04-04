@@ -239,7 +239,8 @@ def _call_llm_for_prompt(prompt_text: str, params: Dict[str, str]) -> Dict[str, 
                 {"role": "system", "content": LLM_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt_text}
             ],
-            stream=False # Changed to False for simpler handling first, can revisit streaming
+            stream=False, # Changed to False for simpler handling first, can revisit streaming
+            max_tokens=2000
             # extra_body={ # This might not be standard or supported by all models via OpenRouter
             #     "include_reasoning": True, 
             # }
