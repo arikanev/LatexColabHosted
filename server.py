@@ -392,6 +392,10 @@ def process_latex_with_ai(payload: LatexContent):
     """
     # --- Access content via payload object ---
     latex_content = payload.latex_content
+    
+    # --- Added More Debug Logging --- 
+    logger.info(f"Received latex_content (first 500 chars):\n{latex_content[:500]}")
+    # --- End Debug Logging ---
 
     if not client:
         raise HTTPException(status_code=500, detail="AI Processing Error: OpenRouter client not initialized. API key missing?")
