@@ -393,8 +393,12 @@ def process_latex_with_ai(payload: LatexContent):
     # --- Access content via payload object ---
     latex_content = payload.latex_content
     
-    # --- Added More Debug Logging --- 
-    logger.info(f"Received latex_content (first 500 chars):\n{latex_content[:500]}")
+    # --- Corrected Debug Logging (Show start of ACTUAL received content) ---
+    log_preview_length = 2000 # Log more characters to be sure
+    logged_content_preview = latex_content[:log_preview_length]
+    if len(latex_content) > log_preview_length:
+        logged_content_preview += "... [truncated in log]"
+    logger.info(f"Received latex_content preview:\n{logged_content_preview}")
     # --- End Debug Logging ---
 
     if not client:
