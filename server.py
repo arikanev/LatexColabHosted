@@ -14,6 +14,7 @@ from openai import OpenAI # Added for LLM interaction
 from typing import Dict, Any, List # Added for type hinting
 from fastapi.staticfiles import StaticFiles # Added
 from fastapi.responses import FileResponse  # Added
+from pydantic import BaseModel # Added for request body validation
 
 # --- Environment Variable Check ---
 # Ensure OpenRouter API key is set
@@ -60,6 +61,11 @@ LLM_SYSTEM_PROMPT = dedent("""\
 """)
 
 DEFAULT_MODEL = "anthropic/claude-3.5-sonnet" # Default model if not specified
+
+# --- Pydantic Models --- Added this section
+
+class LatexContent(BaseModel):
+    latex_content: str
 
 # --- Helper Functions (To be potentially moved to utils) ---
 
@@ -378,12 +384,15 @@ def sync_overleaf(
                 logger.error(f"Failed to clean up temporary directory {temp_dir}: {e}")
 
 @app.post("/process/")
-def process_latex_with_ai(latex_content: str = Body(...)):
+def process_latex_with_ai(payload: LatexContent):
     """
     Finds the first '\\begin{user}' block with 'status=start', 
     calls the LLM, inserts the response, updates the status, and returns the modified content.
-    - **latex_content**: The full content of the LaTeX file as a string.
+    - **payload**: JSON body containing {"latex_content": "..."}
     """
+    # --- Access content via payload object ---
+    latex_content = payload.latex_content
+
     if not client:
         raise HTTPException(status_code=500, detail="AI Processing Error: OpenRouter client not initialized. API key missing?")
 
