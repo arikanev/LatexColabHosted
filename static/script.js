@@ -102,6 +102,10 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // --- Added Client-Side Debug Logging ---
+        console.log("Sending to /process (first 500 chars):", contentToSend.substring(0, 500));
+        // --- End Debug Logging ---
+
         showStatus('Processing AI prompts...');
         try {
             const data = await makeApiCall('/process', {
