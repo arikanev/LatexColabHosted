@@ -245,12 +245,20 @@ def _call_llm_for_prompt(prompt_text: str, params: Dict[str, str]) -> Dict[str, 
             # }
         )
         
-        # Assume the full response is the answer for now
-        # A more sophisticated approach might parse the response if the model
-        # explicitly separates reasoning, but that's not guaranteed.
-        # We rely on the system prompt asking for reasoning/answer blocks.
-        full_response = completion.choices[0].message.content or ""
-        
+        # --- Add safety checks for response structure --- 
+        full_response = "[Error: Received invalid response structure from LLM API]"
+        if completion and completion.choices and len(completion.choices) > 0:
+            first_choice = completion.choices[0]
+            if first_choice.message:
+                full_response = first_choice.message.content or "[Error: LLM response content was empty]"
+            else:
+                 full_response = "[Error: LLM response did not contain expected message structure]"
+                 logger.warning(f"LLM response missing message structure: {first_choice}")
+        else:
+             full_response = "[Error: LLM response did not contain expected choices list]"
+             logger.warning(f"LLM response missing choices: {completion}")
+        # --- End safety checks ---
+
         # Basic split: Assume reasoning block comes first if present
         reasoning_match = re.search(r"\\\\begin\{reasoning\}(.*?)\\\\end\{reasoning\}", full_response, re.DOTALL)
         answer_match = re.search(r"\\\\begin\{answer\}(.*?)\\\\end\{answer\}", full_response, re.DOTALL)
