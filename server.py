@@ -143,7 +143,7 @@ def _create_credential_url(git_url: str, token: str) -> str:
 def _parse_parameters_from_text(text: str) -> Dict[str, str]:
     """Parses parameters from a comment line like '%parameters: key=value, key2=value2'."""
     params = {}
-    param_line_match = re.search(r'^%\\s*parameters:\\s*(.*?)(?:\\n|$)', text, re.MULTILINE | re.IGNORECASE)
+    param_line_match = re.search(r'%\\s*parameters:\\s*(.*?)(?:\\n|$)', text, re.MULTILINE | re.IGNORECASE)
     if param_line_match:
         param_text = param_line_match.group(1).strip()
         # More robust parsing for key=value pairs, allows spaces around '=' and ','
