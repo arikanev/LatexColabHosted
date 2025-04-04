@@ -5,7 +5,7 @@ import tempfile
 import shutil
 import os
 import subprocess
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, quote
 import logging
 import re
 from datetime import datetime
@@ -88,11 +88,22 @@ def _run_git_command(command: list[str], cwd: str):
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred during git operation: {str(e)}")
 
 def _create_credential_url(git_url: str, token: str) -> str:
-    """Injects credentials into a git URL."""
+    """Injects URL-encoded credentials into a git URL."""
     try:
+        if not token:
+            # Raise HTTPException for bad request if token is missing
+            raise HTTPException(status_code=400, detail="Overleaf token cannot be empty.")
+
         parsed_url = urlparse(git_url)
-        # Assume username is 'git' for Overleaf token-based auth
-        netloc = f"git:{token}@{parsed_url.netloc}"
+        if not parsed_url.scheme or not parsed_url.netloc:
+            raise HTTPException(status_code=400, detail="Invalid Git URL format provided.")
+
+        # URL-encode the token
+        encoded_token = quote(token, safe='')
+
+        # Construct netloc with username and *encoded* token
+        netloc = f"git:{encoded_token}@{parsed_url.netloc}"
+
         credential_url = urlunparse((
             parsed_url.scheme,
             netloc,
@@ -101,14 +112,20 @@ def _create_credential_url(git_url: str, token: str) -> str:
             parsed_url.query,
             parsed_url.fragment
         ))
-        # Remove trailing '.git' if present for consistency, though Overleaf URLs usually don't have it
+
+        # Remove trailing '.git' if present (unlikely for Overleaf but safe)
         if credential_url.endswith('.git'):
-             credential_url = credential_url[:-4]
+            credential_url = credential_url[:-4]
+
         logger.info(f"Created credential URL for {parsed_url.netloc}")
         return credential_url
+    except HTTPException as http_exc:
+        # Re-raise specific HTTP exceptions
+        raise http_exc
     except Exception as e:
         logger.error(f"Error creating credential URL: {str(e)}")
-        raise HTTPException(status_code=400, detail="Invalid Git URL format.")
+        # Generic error for unexpected issues during URL creation
+        raise HTTPException(status_code=500, detail=f"Internal error creating credential URL: {str(e)}")
 
 # --- LaTeX Parsing Helper Functions (Adapted from PickLatexPrompts.py) ---
 
