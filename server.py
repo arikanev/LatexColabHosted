@@ -397,6 +397,11 @@ def process_latex_with_ai(payload: LatexContent):
         raise HTTPException(status_code=500, detail="AI Processing Error: OpenRouter client not initialized. API key missing?")
 
     user_envs = _find_environments(latex_content, 'user')
+    # --- Added Debug Logging --- 
+    logger.info(f"Found {len(user_envs)} user environments. Checking parameters...")
+    for i, env in enumerate(user_envs):
+        logger.info(f"  Env {i} Params: {env['params']} | Status param value: '{env['params'].get('status')}'")
+    # --- End Debug Logging ---
     
     target_env = None
     for env in user_envs:
