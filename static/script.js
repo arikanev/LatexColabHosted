@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const processButton = document.getElementById('process-button');
     const syncButton = document.getElementById('sync-button');
     const statusMessage = document.getElementById('status-message');
+    const openRouterKeyInput = document.getElementById('openrouter-key');
 
     let currentContent = '';
 
@@ -97,19 +98,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
     processButton.addEventListener('click', async () => {
         const contentToSend = latexEditor.value;
+        const openRouterKey = openRouterKeyInput.value.trim();
+
         if (!contentToSend) {
             showStatus('Editor is empty, nothing to process.', 'error', 3000);
             return;
         }
+        if (!openRouterKey) {
+            showStatus('Please enter your OpenRouter API key.', 'error', 3000);
+            return;
+        }
 
-        // --- Modified Client-Side Debug Logging (Log FULL content) ---
         console.log("Sending to /process (Full content being sent):", contentToSend);
-        // --- End Debug Logging ---
+        console.log("Using OpenRouter Key (masked):", openRouterKey ? openRouterKey.substring(0, 5) + '...' : 'Not Provided');
 
         showStatus('Processing AI prompts...');
         try {
             const data = await makeApiCall('/process', {
-                latex_content: contentToSend
+                latex_content: contentToSend,
+                openrouter_api_key: openRouterKey
             });
 
             if (data.processed) {

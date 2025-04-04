@@ -16,15 +16,7 @@ from typing import Dict, Any, List # Added for type hinting
 from fastapi.staticfiles import StaticFiles # Added
 from fastapi.responses import FileResponse  # Added
 from pydantic import BaseModel # Added for request body validation
-
-# --- Environment Variable Check ---
-# Ensure OpenRouter API key is set
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-if not OPENROUTER_API_KEY:
-    # This provides a warning but allows the server to start. 
-    # Calls to /process will fail if the key isn't set at runtime.
-    print("WARNING: OPENROUTER_API_KEY environment variable not set. AI processing will fail.")
-    # raise ValueError("OPENROUTER_API_KEY environment variable is not set.") # Alternatively, raise error at startup
+from typing import Optional # Added for optional field
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -41,18 +33,6 @@ app = FastAPI(
 # Make sure the 'static' directory exists in the same place as server.py (i.e., inside LatexColab)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# --- OpenAI Client Initialization ---
-# Initialize only if the key exists, otherwise methods using it will check
-client = None
-if OPENROUTER_API_KEY:
-    client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=OPENROUTER_API_KEY,
-    )
-    logger.info("OpenRouter client initialized.")
-else:
-    logger.warning("OpenRouter client not initialized due to missing API key.")
-
 # --- System Prompt for LLM ---
 LLM_SYSTEM_PROMPT = dedent("""\
     You are an advanced latex collaborator agent. Use latex formatting when writing down equations and
@@ -63,7 +43,11 @@ LLM_SYSTEM_PROMPT = dedent("""\
 
 DEFAULT_MODEL = "anthropic/claude-3.5-sonnet" # Default model if not specified
 
-# --- Pydantic Models --- Added this section
+# --- Pydantic Models --- Updated
+
+class ProcessPayload(BaseModel):
+    latex_content: str
+    openrouter_api_key: str # Make it required from the frontend
 
 class LatexContent(BaseModel):
     latex_content: str
@@ -210,39 +194,39 @@ def _find_environments(content: str, env_name: str) -> List[Dict[str, Any]]:
         })
     return envs
 
-# --- AI Processing Function ---
+# --- AI Processing Function --- Updated to accept API key
 
-def _call_llm_for_prompt(prompt_text: str, params: Dict[str, str]) -> Dict[str, str]:
-    """Calls the LLM via OpenRouter, expecting reasoning and answer."""
-    global client # Access the globally initialized client
-    if not client:
-         raise HTTPException(status_code=500, detail="OpenRouter client not initialized. Is OPENROUTER_API_KEY set?")
+def _call_llm_for_prompt(prompt_text: str, params: Dict[str, str], api_key: str) -> Dict[str, str]:
+    """Calls the LLM via OpenRouter using the provided API key."""
+    # Initialize client here using the provided key
+    try:
+        local_client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key, # Use key from argument
+        )
+    except Exception as e:
+         logger.error(f"Failed to initialize OpenRouter client: {e}")
+         raise HTTPException(status_code=500, detail="Failed to initialize OpenRouter client. Check API key format?")
          
     model = params.get("model", DEFAULT_MODEL).strip()
-    # Basic model name cleaning (replace common separators if needed)
-    model = model.replace(":", "/") # e.g., claude-3.5-sonnet:thinking -> anthropic/claude-3.5-sonnet
-    # Add more cleaning/mapping if needed based on common user inputs
+    model = model.replace(":", "/")
 
-    logger.info(f"Calling LLM: {model} for prompt: '{prompt_text[:50]}...'")
+    logger.info(f"Calling LLM: {model} for prompt: '{prompt_text[:50]}...' using provided key.")
 
     reasoning_content = ""
     answer_content = ""
     start_time = time.time()
 
     try:
-        # Use stream=True to potentially get reasoning first if model supports it
-        # Note: OpenRouter's `include_reasoning` is model-specific and might not work universally.
-        # We will construct reasoning/answer blocks from the standard response structure.
-        completion = client.chat.completions.create(
+        # Use the locally initialized client
+        completion = local_client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": LLM_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt_text}
             ],
-            stream=False, # Changed to False for simpler handling first, can revisit streaming
-            # extra_body={ # This might not be standard or supported by all models via OpenRouter
-            #     "include_reasoning": True, 
-            # }
+            stream=False, 
+            max_tokens=2000 
         )
         
         # --- Add safety checks for response structure --- 
@@ -275,10 +259,11 @@ def _call_llm_for_prompt(prompt_text: str, params: Dict[str, str]) -> Dict[str, 
 
 
     except Exception as e:
-        logger.error(f"Error calling LLM ({model}): {e}")
-        # Return error messages within the blocks
-        reasoning_content = f"[Error during LLM call: {str(e)}]"
-        answer_content = f"[Error during LLM call: {str(e)}]"
+        # Catch potential API errors from OpenRouter (e.g., invalid key, rate limits)
+        logger.error(f"Error calling LLM API ({model}): {e}")
+        # Consider parsing the exception details if possible, might contain useful info from OpenRouter
+        reasoning_content = f"[Error during LLM API call: {str(e)}]"
+        answer_content = f"[Error during LLM API call: {str(e)}]"
 
     end_time = time.time()
     duration_seconds = int(end_time - start_time)
@@ -423,15 +408,16 @@ def sync_overleaf(
                 logger.error(f"Failed to clean up temporary directory {temp_dir}: {e}")
 
 @app.post("/process/")
-def process_latex_with_ai(payload: LatexContent):
+def process_latex_with_ai(payload: ProcessPayload):
     """
     Finds the first '\\begin{user}' block with 'status=start', 
-    calls the LLM, inserts the response, updates the status, and returns the modified content.
-    - **payload**: JSON body containing {"latex_content": "..."}
+    calls the LLM using the provided API key, inserts the response, 
+    updates the status, and returns the modified content.
+    - **payload**: JSON body containing {"latex_content": "...", "openrouter_api_key": "..."}
     """
-    # --- Access content via payload object ---
     latex_content = payload.latex_content
-    
+    openrouter_api_key = payload.openrouter_api_key # Get key from payload
+
     # --- Corrected Debug Logging (Show start of ACTUAL received content) ---
     log_preview_length = 2000 # Log more characters to be sure
     logged_content_preview = latex_content[:log_preview_length]
@@ -439,9 +425,6 @@ def process_latex_with_ai(payload: LatexContent):
         logged_content_preview += "... [truncated in log]"
     logger.info(f"Received latex_content preview:\n{logged_content_preview}")
     # --- End Debug Logging ---
-
-    if not client:
-        raise HTTPException(status_code=500, detail="AI Processing Error: OpenRouter client not initialized. API key missing?")
 
     user_envs = _find_environments(latex_content, 'user')
     # --- Added Debug Logging --- 
@@ -463,13 +446,15 @@ def process_latex_with_ai(payload: LatexContent):
 
     logger.info(f"Processing user prompt starting at index {target_env['start']}")
     
-    # Call the LLM
+    # Call the LLM, passing the API key
     try:
-        llm_response = _call_llm_for_prompt(target_env['clean_text'], target_env['params'])
+        llm_response = _call_llm_for_prompt(target_env['clean_text'], target_env['params'], openrouter_api_key)
     except HTTPException as http_exc: # Catch specific LLM call errors
          raise http_exc
+    # --- Catch more general exceptions from LLM call too --- 
     except Exception as e:
          logger.exception("Error during LLM processing logic")
+         # Use a more specific error message if possible, or keep generic
          raise HTTPException(status_code=500, detail=f"Internal error during AI processing: {str(e)}")
 
     # --- Construct the new LaTeX string ---
@@ -543,8 +528,4 @@ async def read_index():
 if __name__ == "__main__":
     # Configuration for running directly (optional)
     # Use --host 0.0.0.0 to make it accessible on the network
-    # Ensure API key is set if running this way too
-    if not OPENROUTER_API_KEY:
-         print("ERROR: OPENROUTER_API_KEY must be set as an environment variable to run.")
-    else:
-         uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True) # Removed app_dir as uvicorn runs from workspace root by default now? Let's simplify. If issues, add app_dir="LatexColab" back. 
+    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True) 
