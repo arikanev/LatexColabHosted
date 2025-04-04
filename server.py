@@ -157,7 +157,7 @@ def _find_environments(content: str, env_name: str) -> List[Dict[str, Any]]:
     """Finds all occurrences of a specific LaTeX environment."""
     envs = []
     # Pattern to find \\begin{env_name} ... \\end{env_name} non-greedily
-    pattern = re.compile(r'\\\\begin\{' + re.escape(env_name) + r'\}(.*?)\\\\end\{' + re.escape(env_name) + r'\}', re.DOTALL)
+    pattern = re.compile(r'\\begin\{' + re.escape(env_name) + r'\}(.*?)\\end\{' + re.escape(env_name) + r'\}', re.DOTALL)
     for match in pattern.finditer(content):
         env_content = match.group(1)
         params = {}
