@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LatexColab Web</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>LatexColab Web Interface</h1>
+
+        <div class="config-section">
+            <h2>Configuration</h2>
+            <div class="form-group">
+                <label for="git-url">Overleaf Git URL:</label>
+                <input type="url" id="git-url" placeholder="https://git.overleaf.com/YOUR_PROJECT_ID" required>
+            </div>
+            <div class="form-group">
+                <label for="git-token">Overleaf Token:</label>
+                <input type="password" id="git-token" placeholder="Enter your Overleaf Git token/password" required>
+            </div>
+            <div class="form-group">
+                <label for="file-path">Relative Path to .tex File:</label>
+                <input type="text" id="file-path" value="main.tex" placeholder="e.g., main.tex or chapter1/section1.tex" required>
+            </div>
+            <button id="fetch-button">Fetch Document</button>
+        </div>
+
+        <div class="editor-section" style="display: none;">
+            <h2>Editor</h2>
+            <textarea id="latex-editor" rows="25" spellcheck="false"></textarea>
+            <div class="button-group">
+                <button id="process-button">Process AI Prompts (status=start)</button>
+                <button id="sync-button">Sync to Overleaf</button>
+            </div>
+        </div>
+
+        <div id="status-message" class="status"></div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html> 

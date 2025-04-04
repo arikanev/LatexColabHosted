@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Overleaf Sync Wrapper
+# A simple wrapper for the overleaf_sync.py script that makes it easier to use
+
+
+source venv/bin/activate
+# ---------------- CONFIGURATION (Edit these values) ----------------
+# Your Overleaf git URL
+OVERLEAF_GIT_URL="https://git.overleaf.com/67c5d8972683f1ee5d2c2dc0"
+
+# Your Overleaf login email
+GIT_USERNAME="git"
+
+# Your Overleaf API token (from Account Settings -> API)
+API_TOKEN="olp_6hlJ0CYmKw4Vod1AKopYwiqOkwhgZq2Fd2aL"
+
+# Local repository path (where the git repo will be cloned)
+REPO_PATH="$HOME/PythonDev/LatexColab_V1/LatexProjects/Example/67c5d8972683f1ee5d2c2dc0"
+
+# Path to the Python script
+PYTHON_SCRIPT="AgenticLatexGitPush.py"
+AGENT_SCRIPT="LatexColabAgent.py"
+LOGGER_SERVER_SCRIPT="standalone_logger.py"
+# ---------------- END CONFIGURATION ----------------
+
+# Show usage if no arguments provided
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 path/to/your/latex_file.tex"
+    exit 1
+fi
+
+# Get the absolute path of the LaTeX file
+LATEX_FILE=$(realpath "$1")
+
+# Check if the file exists
+if [ ! -f "$LATEX_FILE" ]; then
+    echo "Error: LaTeX file not found: $LATEX_FILE"
+    exit 1
+fi
+
+# Check if the file ends with .tex
+if [[ "$LATEX_FILE" != *.tex ]]; then
+    echo "Warning: File doesn't have a .tex extension. Are you sure it's a LaTeX file?"
+    read -p "Continue anyway? (y/n): " CONTINUE
+    if [[ $CONTINUE != "y" && $CONTINUE != "Y" ]]; then
+        exit 1
+    fi
+fi
+
+# Check if Python script exists
+if [ ! -f "$PYTHON_SCRIPT" ]; then
+    echo "Error: Python script not found: $PYTHON_SCRIPT"
+    echo "Make sure the Python script is in the same directory as this bash script"
+    exit 1
+fi
+
+# Check for dependencies
+command -v python3 >/dev/null 2>&1 || { echo "Python 3 is required but not installed. Aborting."; exit 1; }
+python3 -c "import watchdog" 2>/dev/null || { echo "Python package 'watchdog' not found. Install with: pip install watchdog"; exit 1; }
+python3 -c "import requests" 2>/dev/null || { echo "Python package 'requests' not found. Install with: pip install requests"; exit 1; }
+
+# Run the Python script
+echo "Starting Overleaf sync for $LATEX_FILE"
+echo "Press Ctrl+C to stop"
+echo
+
+python3 "$AGENT_SCRIPT" "$LATEX_FILE" \
+        --repo-path "$REPO_PATH" &
+
+python3 "$LOGGER_SERVER_SCRIPT" &
+
+sleep 2s
+
+python3 "$PYTHON_SCRIPT" "$LATEX_FILE" \
+    --git-url "$OVERLEAF_GIT_URL" \
+    --git-username "$GIT_USERNAME" \
+    --prompt-password \
+    --extract-project-id \
+    --api-token "$API_TOKEN" \
+    --repo-path "$REPO_PATH"
+# --auto-install-packages \
+# --local-compile \
+#    --open-pdf \
+
+pkill -f "$AGENT_SCRIPT"
+pkill -f "$LOGGER_SERVER_SCRIPT"
