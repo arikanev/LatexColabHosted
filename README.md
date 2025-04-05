@@ -1,17 +1,5 @@
 # LatexColab - Collaborative LaTeX Agent (Full App Version)
 
-This Full App needs you to run in terminal:
-
-1. `export OPENROUTER_API_KEY='your_actual_openrouter_key'`
-2. `cd LatexColab`
-3. `pip install -r requirements.txt`
-4. `uvicorn server:app --reload --port 8000`
-
-Access the Frontend: Open your web browser and go to http://127.0.0.1:8000.
-
-You should see the web interface. Enter your Overleaf Git URL, your Overleaf Git token/password, the relative path to your .tex file (e.g., main.tex), and click "Fetch Document". You can then edit the document, use the "Process AI Prompts" button, and sync changes back with the "Sync to Overleaf" button.
-This setup should handle concurrent users because each API request (/fetch, /sync, /process) is handled independently by FastAPI, and resource-intensive operations like Git cloning happen in isolated temporary directories for each request.
- 
 
 <div align="left">
   <img src="assets/LC.png" alt="LatexColab Logo" width="400">
