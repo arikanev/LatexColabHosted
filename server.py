@@ -10,17 +10,39 @@ import logging
 import re
 from datetime import datetime
 from textwrap import dedent
-from openai import OpenAI # Added for LLM interaction
 import time # Added missing import
 from typing import Dict, Any, List # Added for type hinting
 from fastapi.staticfiles import StaticFiles # Added
 from fastapi.responses import FileResponse  # Added
 from pydantic import BaseModel # Added for request body validation
 from typing import Optional # Added for optional field
+import redis # Added for locking
+import hashlib # Added for lock key generation
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# --- Redis Configuration (Added) ---
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379") # Default to local Redis if not set
+# Create a Redis client instance
+try:
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+    redis_client.ping() # Test connection
+    logger.info(f"Successfully connected to Redis at {REDIS_URL}")
+except redis.exceptions.ConnectionError as e:
+    logger.error(f"Could not connect to Redis at {REDIS_URL}: {e}")
+    # Depending on requirements, you might exit or run without locking
+    # For now, we'll log the error and continue, but locking will fail
+    redis_client = None
+except Exception as e:
+    logger.error(f"An unexpected error occurred initializing Redis: {e}")
+    redis_client = None
+
+# Lock configuration (Added)
+LOCK_TIMEOUT_MS = 30000 # 30 seconds expiration for the lock
+LOCK_RETRY_DELAY_S = 0.5 # Delay between lock acquisition retries
+LOCK_MAX_RETRIES = 5 # Maximum number of retries to acquire lock
 
 app = FastAPI(
     title="LatexColab Server",
@@ -47,7 +69,6 @@ DEFAULT_MODEL = "anthropic/claude-3.5-sonnet" # Default model if not specified
 
 class ProcessPayload(BaseModel):
     latex_content: str
-    openrouter_api_key: str # Make it required from the frontend
 
 class LatexContent(BaseModel):
     latex_content: str
@@ -194,93 +215,6 @@ def _find_environments(content: str, env_name: str) -> List[Dict[str, Any]]:
         })
     return envs
 
-# --- AI Processing Function --- Updated to accept API key
-
-def _call_llm_for_prompt(prompt_text: str, params: Dict[str, str], api_key: str) -> Dict[str, str]:
-    """Calls the LLM via OpenRouter using the provided API key."""
-    # Initialize client here using the provided key
-    try:
-        local_client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=api_key, # Use key from argument
-        )
-    except Exception as e:
-         logger.error(f"Failed to initialize OpenRouter client: {e}")
-         raise HTTPException(status_code=500, detail="Failed to initialize OpenRouter client. Check API key format?")
-         
-    model = params.get("model", DEFAULT_MODEL).strip()
-    model = model.replace(":", "/")
-
-    logger.info(f"Calling LLM: {model} for prompt: '{prompt_text[:50]}...' using provided key.")
-
-    reasoning_content = ""
-    answer_content = ""
-    start_time = time.time()
-
-    try:
-        # Use the locally initialized client
-        completion = local_client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": LLM_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt_text}
-            ],
-            stream=False, 
-            max_tokens=2000 
-        )
-        
-        # --- Add safety checks for response structure --- 
-        full_response = "[Error: Received invalid response structure from LLM API]"
-        if completion and completion.choices and len(completion.choices) > 0:
-            first_choice = completion.choices[0]
-            if first_choice.message:
-                full_response = first_choice.message.content or "[Error: LLM response content was empty]"
-            else:
-                 full_response = "[Error: LLM response did not contain expected message structure]"
-                 logger.warning(f"LLM response missing message structure: {first_choice}")
-        else:
-             full_response = "[Error: LLM response did not contain expected choices list]"
-             logger.warning(f"LLM response missing choices: {completion}")
-        # --- End safety checks ---
-
-        # Basic split: Assume reasoning block comes first if present
-        reasoning_match = re.search(r"\\\\begin\{reasoning\}(.*?)\\\\end\{reasoning\}", full_response, re.DOTALL)
-        answer_match = re.search(r"\\\\begin\{answer\}(.*?)\\\\end\{answer\}", full_response, re.DOTALL)
-
-        if reasoning_match and answer_match:
-             reasoning_content = reasoning_match.group(1).strip()
-             answer_content = answer_match.group(1).strip()
-        elif answer_match: # Only answer found
-             answer_content = answer_match.group(1).strip()
-             reasoning_content = "[No reasoning block provided by model]"
-        else: # Neither block found, put entire response in answer
-             answer_content = full_response.strip()
-             reasoning_content = "[Model did not provide standard reasoning/answer blocks]"
-
-
-    except Exception as e:
-        # Catch potential API errors from OpenRouter (e.g., invalid key, rate limits)
-        logger.error(f"Error calling LLM API ({model}): {e}")
-        # Consider parsing the exception details if possible, might contain useful info from OpenRouter
-        reasoning_content = f"[Error during LLM API call: {str(e)}]"
-        answer_content = f"[Error during LLM API call: {str(e)}]"
-
-    end_time = time.time()
-    duration_seconds = int(end_time - start_time)
-    duration_minutes = duration_seconds // 60
-    duration_remaining_seconds = duration_seconds % 60
-    
-    # Add metadata to the answer block title
-    answer_title = f"by {model} (generated in {duration_minutes} minutes and {duration_remaining_seconds} seconds.)"
-
-    logger.info(f"LLM call finished in {duration_seconds}s. Answer length: {len(answer_content)}")
-
-    return {
-        "reasoning": reasoning_content,
-        "answer": answer_content,
-        "answer_title": answer_title
-    }
-
 # --- API Endpoints ---
 
 @app.post("/fetch/")
@@ -320,7 +254,7 @@ def fetch_overleaf_file(
             file_content = f.read()
         logger.info(f"Successfully read file: {relative_file_path}")
 
-        return {"message": "Fetch successful", "file_content": file_content}
+        return {"relative_file_path": relative_file_path, "file_content": file_content}
 
     except HTTPException as http_exc:
         # Re-raise HTTP exceptions directly (like 404 or git errors)
@@ -351,164 +285,137 @@ def sync_overleaf(
     - **relative_file_path**: The path to the .tex file within the repository (e.g., 'main.tex').
     - **file_content**: The new content for the specified file.
     """
-    temp_dir = None
+    logger.info(f"Received sync request for {relative_file_path} in repo {git_url}")
+
+    if not redis_client:
+        logger.warning("Redis client not available. Proceeding without locking.")
+        # Decide if you want to allow proceeding without lock or raise an error
+        # raise HTTPException(status_code=503, detail="Sync service temporarily unavailable due to Redis connection issue.")
+
+    # --- Distributed Lock using Redis --- (Replaced TODO with implementation)
+    # Create a unique lock key based on the git URL to ensure only one operation
+    # per repository happens at a time.
+    lock_key_base = f"lock:sync:{git_url}"
+    # Use a hash to keep the key length manageable and avoid special chars
+    lock_key = f"lock:sync:{hashlib.sha1(git_url.encode()).hexdigest()}"
+    lock_acquired = False
+    lock_value = f"lock_acquired_at_{time.time()}" # Unique value for the lock holder
+    attempt = 0
+
     try:
-        # 1. Create a temporary directory
-        temp_dir = tempfile.mkdtemp(prefix="latexcolab_sync_")
-        logger.info(f"Created temporary directory: {temp_dir}")
+        while attempt < LOCK_MAX_RETRIES and redis_client:
+            lock_acquired = redis_client.set(lock_key, lock_value, nx=True, px=LOCK_TIMEOUT_MS)
+            if lock_acquired:
+                logger.info(f"Acquired lock {lock_key} for {git_url}")
+                break
+            else:
+                attempt += 1
+                logger.warning(f"Could not acquire lock {lock_key} for {git_url} (attempt {attempt}/{LOCK_MAX_RETRIES}). Retrying in {LOCK_RETRY_DELAY_S}s...")
+                time.sleep(LOCK_RETRY_DELAY_S)
 
-        # 2. Create URL with credentials
-        credential_url = _create_credential_url(git_url, git_token)
+        if not lock_acquired:
+            logger.error(f"Failed to acquire lock {lock_key} for {git_url} after {LOCK_MAX_RETRIES} attempts.")
+            raise HTTPException(status_code=429, # Too Many Requests / Conflict
+                                detail=f"Could not process sync for {git_url}. The repository is currently locked by another operation. Please try again shortly.")
 
-        # 3. Clone the repository
-        _run_git_command(["git", "clone", credential_url, temp_dir], cwd=os.path.dirname(temp_dir))
-        logger.info(f"Cloned repository {git_url} into {temp_dir}")
-        
-        # Configure git user for commit inside the repo
-        # Use a generic identity as the specific user is authenticated via token
-        _run_git_command(["git", "config", "user.email", "agent@latexcolab.server"], cwd=temp_dir)
-        _run_git_command(["git", "config", "user.name", "LatexColab Agent"], cwd=temp_dir)
+        # --- Proceed with Git operations inside the lock ---
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger.info(f"Created temporary directory: {tmpdir}")
+            credential_url = _create_credential_url(git_url, git_token)
 
-        # 4. Write the updated file content
-        target_file = os.path.join(temp_dir, relative_file_path)
-        os.makedirs(os.path.dirname(target_file), exist_ok=True)
-        with open(target_file, 'w', encoding='utf-8') as f:
-            f.write(file_content)
-        logger.info(f"Updated file: {target_file}")
-
-        # 5. Git Add, Commit, Push
-        _run_git_command(["git", "add", relative_file_path], cwd=temp_dir)
-        # Check if there are changes to commit
-        status_result = subprocess.run(["git", "status", "--porcelain"], cwd=temp_dir, capture_output=True, text=True)
-        if relative_file_path in status_result.stdout:
-             _run_git_command(["git", "commit", "-m", f"Auto-update: {relative_file_path} via API"], cwd=temp_dir)
-             _run_git_command(["git", "push", "origin", "master"], cwd=temp_dir)
-             logger.info(f"Committed and pushed changes for {relative_file_path}")
-        else:
-             logger.info("No changes detected in the file to commit.")
-
-        # Return the absolute path of the temp dir for debugging, maybe remove later
-        # Note: Returning file paths from APIs can be a security risk if not handled carefully on the client.
-        # Consider returning only success/failure messages in production.
-        return {"message": "Sync successful", "processed_in_dir": os.path.abspath(temp_dir)} 
-
-    except HTTPException as http_exc:
-        # Re-raise HTTP exceptions directly
-        raise http_exc
-    except Exception as e:
-        logger.exception(f"An error occurred during sync: {e}") # Log full traceback
-        raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
-    finally:
-        # 6. Clean up the temporary directory
-        if temp_dir and os.path.exists(temp_dir):
             try:
-                shutil.rmtree(temp_dir)
-                logger.info(f"Cleaned up temporary directory: {temp_dir}")
+                # Clone the repo
+                logger.info(f"Cloning {git_url} into {tmpdir}")
+                _run_git_command(["git", "clone", credential_url, tmpdir], cwd=os.path.dirname(tmpdir))
+
+                # Configure git user
+                _run_git_command(["git", "config", "user.email", "agent@latexcolab.server"], cwd=tmpdir)
+                _run_git_command(["git", "config", "user.name", "LatexColab Agent"], cwd=tmpdir)
+
+                # Write the updated file content
+                local_file_path = os.path.join(tmpdir, relative_file_path)
+                # Ensure the directory exists in case the file is in a subfolder
+                os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+                logger.info(f"Writing content to {local_file_path}")
+                with open(local_file_path, 'w', encoding='utf-8') as f:
+                    f.write(file_content)
+
             except Exception as e:
-                logger.error(f"Failed to clean up temporary directory {temp_dir}: {e}")
+                 logger.error(f"Error during git clone or file write for {git_url}: {e}")
+                 # Raise specific HTTP errors if possible, otherwise generic 500
+                 if isinstance(e, HTTPException):
+                     raise e
+                 else:
+                     raise HTTPException(status_code=500, detail=f"Failed to prepare repository or write file: {str(e)}")
 
-@app.post("/process/")
-def process_latex_with_ai(payload: ProcessPayload):
-    """
-    Finds the first '\\begin{user}' block with 'status=start', 
-    calls the LLM using the provided API key, inserts the response, 
-    updates the status, and returns the modified content.
-    - **payload**: JSON body containing {"latex_content": "...", "openrouter_api_key": "..."}
-    """
-    latex_content = payload.latex_content
-    openrouter_api_key = payload.openrouter_api_key # Get key from payload
+            # --- Git Commit and Push ---
+            try:
+                # Check git status
+                status_output = _run_git_command(["git", "status", "--porcelain"], cwd=tmpdir)
+                if not status_output or relative_file_path not in status_output:
+                    logger.info("No changes detected in the file. Nothing to commit or push.")
+                    # No need to raise error, just return success
+                    # return {"message": "No changes detected. Sync successful (no action needed)."
+                    # NOTE: We let it fall through to the final return for consistency
+                else:
+                    logger.info(f"Changes detected:\n{status_output}")
+                    # Add, commit, and push
+                    commit_message = f"Update {relative_file_path} via API sync - {datetime.now().isoformat()}" # Corrected var name
+                    _run_git_command(["git", "add", local_file_path], cwd=tmpdir)
+                    _run_git_command(["git", "commit", "-m", commit_message], cwd=tmpdir)
 
-    # --- Corrected Debug Logging (Show start of ACTUAL received content) ---
-    log_preview_length = 2000 # Log more characters to be sure
-    logged_content_preview = latex_content[:log_preview_length]
-    if len(latex_content) > log_preview_length:
-        logged_content_preview += "... [truncated in log]"
-    logger.info(f"Received latex_content preview:\n{logged_content_preview}")
-    # --- End Debug Logging ---
+                    # --- Push with credential URL --- (Corrected push command)
+                    logger.info(f"Pushing changes to {git_url} (master branch)...")
+                    # Use the credential_url for push, not the original git_url
+                    # Ensure correct branch name if not always master (e.g., main)
+                    # TODO: Consider making branch configurable or detecting default
+                    _run_git_command(["git", "push", "origin", "master"], cwd=tmpdir)
+                    logger.info(f"Successfully synced and pushed changes for {relative_file_path}")
 
-    user_envs = _find_environments(latex_content, 'user')
-    # --- Added Debug Logging --- 
-    logger.info(f"Found {len(user_envs)} user environments. Checking parameters...")
-    for i, env in enumerate(user_envs):
-        logger.info(f"  Env {i} Params: {env['params']} | Status param value: '{env['params'].get('status')}'")
-    # --- End Debug Logging ---
-    
-    target_env = None
-    for env in user_envs:
-        if env['params'].get('status', '').strip().lower() == 'start':
-            target_env = env
-            break # Process only the first one found
+            except HTTPException as http_exc:
+                # Handle specific git errors from _run_git_command
+                error_detail = str(http_exc.detail).lower()
+                # Note: index.lock errors should be prevented by Redis lock, but handle defensively
+                if "index.lock" in error_detail:
+                    logger.error(f"Git lock file detected for {git_url} despite Redis lock. This shouldn't happen.")
+                    raise HTTPException(status_code=500, # Internal Server Error
+                                        detail="Internal sync conflict. Please try again.")
+                elif "failed to push some refs" in error_detail or "non-fast-forward" in error_detail:
+                     logger.warning(f"Git push failed for {git_url} (likely conflict or stale). Client needs to pull.")
+                     raise HTTPException(status_code=409, # Conflict
+                                         detail="Push rejected. Remote repository has changes. Please fetch/pull changes locally first before processing and syncing again.")
+                else:
+                    # Re-raise other git command errors
+                    logger.error(f"Git operation failed during commit/push: {error_detail}")
+                    raise http_exc
+            except Exception as e:
+                logger.error(f"Unexpected error during git commit/push for {git_url}: {e}")
+                raise HTTPException(status_code=500, detail=f"An unexpected error occurred during git sync: {str(e)}")
 
-    if not target_env:
-        logger.info("No user prompts with 'status=start' found for processing.")
-        # Return original content if no prompt needs processing
-        return {"message": "No prompts found to process", "processed_content": latex_content, "processed": False}
+    finally:
+        # --- Release the lock --- (Added)
+        if lock_acquired and redis_client:
+            # Use Lua script for safe deletion (only delete if value matches)
+            # This prevents deleting a lock acquired by another process if this one timed out.
+            lua_script = """
+            if redis.call("get", KEYS[1]) == ARGV[1] then
+                return redis.call("del", KEYS[1])
+            else
+                return 0
+            end
+            """
+            try:
+                deleted = redis_client.eval(lua_script, 1, lock_key, lock_value)
+                if deleted:
+                    logger.info(f"Released lock {lock_key} for {git_url}")
+                else:
+                     # This could happen if the lock expired and another process acquired it
+                     logger.warning(f"Did not release lock {lock_key} for {git_url} as value did not match (or key expired).")
+            except Exception as e:
+                logger.error(f"Failed to release lock {lock_key} for {git_url}: {e}")
+                # This is serious, as the lock might remain stuck
 
-    logger.info(f"Processing user prompt starting at index {target_env['start']}")
-    
-    # Call the LLM, passing the API key
-    try:
-        llm_response = _call_llm_for_prompt(target_env['clean_text'], target_env['params'], openrouter_api_key)
-    except HTTPException as http_exc: # Catch specific LLM call errors
-         raise http_exc
-    # --- Catch more general exceptions from LLM call too --- 
-    except Exception as e:
-         logger.exception("Error during LLM processing logic")
-         # Use a more specific error message if possible, or keep generic
-         raise HTTPException(status_code=500, detail=f"Internal error during AI processing: {str(e)}")
-
-    # --- Construct the new LaTeX string ---
-    
-    # Create timestamp for completed status
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    new_status = f"completed_{timestamp}"
-    
-    # Update the parameters line within the original user block content
-    original_user_inner = target_env['inner_content']
-    # Replace or add the status parameter
-    if '%parameters:' in original_user_inner:
-         updated_user_inner = re.sub(
-             r'(%\\s*parameters:.*?)(status\\s*=\\s*start)(.*)', 
-             r'\1status=' + new_status + r'\3', 
-             original_user_inner, 
-             flags=re.IGNORECASE | re.DOTALL
-         )
-         # If status=start wasn't found but %parameters: was, append it (edge case)
-         if 'status=' + new_status not in updated_user_inner:
-              updated_user_inner = re.sub(
-                   r'(%\\s*parameters:.*?)$', 
-                   r'\1, status=' + new_status, 
-                   updated_user_inner, 
-                   flags=re.MULTILINE | re.IGNORECASE
-              )
-    else: 
-         # Add the parameters line if it didn't exist
-         updated_user_inner = original_user_inner.strip() + f'\n%parameters: status={new_status}\n'
-         
-    updated_user_block = f'\\begin{{user}}{updated_user_inner}\\end{{user}}'
-
-    # Format the reasoning and answer blocks
-    reasoning_block = f'\\begin{{reasoning}}\n{llm_response["reasoning"]}\n\\end{{reasoning}}'
-    answer_block = f'\\begin{{answer}}[{llm_response["answer_title"]}]\n{llm_response["answer"]}\n\\end{{answer}}'
-    
-    # Combine the new blocks
-    new_blocks = f'\n{reasoning_block}\n\n{answer_block}\n'
-    
-    # --- Replace the original user block and insert new blocks ---
-    # We replace the original user block with the updated one + the new blocks
-    start_index = target_env['start']
-    end_index = target_env['end']
-    
-    # Ensure indices are valid
-    if start_index < 0 or end_index > len(latex_content) or start_index >= end_index:
-         logger.error(f"Invalid indices found for replacement: start={start_index}, end={end_index}")
-         raise HTTPException(status_code=500, detail="Internal error: Could not determine replacement location in LaTeX content.")
-         
-    modified_content = latex_content[:start_index] + updated_user_block + new_blocks + latex_content[end_index:]
-
-    logger.info(f"Successfully processed prompt and updated content.")
-    
-    return {"message": "Prompt processed successfully", "processed_content": modified_content, "processed": True}
+    return {"message": f"Successfully synced changes for {relative_file_path}"}
 
 @app.get("/", include_in_schema=False) # Exclude from OpenAPI docs
 async def read_index():
