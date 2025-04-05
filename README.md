@@ -18,6 +18,111 @@ This setup should handle concurrent users because each API request (/fetch, /syn
   <img src="assets/wavegrower.gif" alt="LatexColab Logo" width="400">>
 </div>
 
+## Architecture Overview (Server + Local Client)
+
+The current architecture consists of two main parts:
+
+1.  **Server (`server.py`)**: Deployed (e.g., on Render), its main job is to receive updated LaTeX content from a client and synchronize it with the specified Overleaf Git repository. It handles concurrent requests using Redis for locking to prevent conflicting pushes to the same project.
+2.  **Local Client (`local_client.py`)**: Run by the user on their local machine. This script reads a local `.tex` file, finds prompts marked for the AI, calls the OpenRouter API using the user's *local* API key, updates the local file with the AI's response, and finally sends the complete updated file content to the server for synchronization with Overleaf.
+
+This architecture keeps the user's OpenRouter API key secure on their local machine.
+
+## Deploying and Running
+
+### 1. Deploy the Server
+
+Follow these general steps (e.g., for Render):
+
+*   Push the code to a Git repository (GitHub, etc.).
+*   Create a Redis instance (`Key Value` store) on Render and get its Internal URL.
+*   Create a Web Service on Render connected to your Git repo.
+*   **Runtime**: Python 3
+*   **Build Command**: `pip install -r requirements.txt`
+*   **Start Command**: `uvicorn server:app --host 0.0.0.0 --port $PORT`
+*   **Environment Variable**: Set `REDIS_URL` to the Internal URL of your Render Redis instance.
+*   Deploy the service and note its public URL (e.g., `https://your-server-name.onrender.com`).
+
+### 2. Run the Local Client
+
+See the "Local Client Workflow" section below for details.
+
+## Local Client Workflow (Recommended)
+
+This is the primary method for interacting with the system.
+
+### Prerequisites (Local Machine)
+
+*   Python 3.7+
+*   Git
+*   Install required Python packages:
+    ```bash
+    pip install requests openai
+    ```
+*   A local copy of your `.tex` file that you want to work on.
+*   Your OpenRouter API Key.
+*   Your Overleaf Project's Git URL (e.g., `https://git.overleaf.com/YOUR_PROJECT_ID`).
+*   An Overleaf Git Token/Password (generate from Overleaf Account Settings -> Git Access).
+*   The URL of your deployed LatexColab server.
+
+### Adding AI Prompts to your `.tex` File
+
+To ask the AI for help, add a `user` environment block to your local `.tex` file:
+
+```latex
+\begin{user}
+%parameters: status=start, model=anthropic/claude-3.5-sonnet
+Please explain the difference between \textit{effect} and \textit{affect} with examples.
+\end{user}
+```
+
+**Key components:**
+*   `\begin{user}` and `\end{user}` tags.
+*   A line starting exactly with `%parameters:`.
+*   `status=start`: This tells the client to process this block.
+*   `model=...` (Optional): Specify an OpenRouter model identifier (e.g., `anthropic/claude-3.5-sonnet`, `openai/gpt-4o-mini`). Defaults to Claude 3.5 Sonnet if omitted.
+*   The actual prompt text for the AI.
+
+The parameters line can appear anywhere inside the `user` block.
+
+### Running the Client Script
+
+Once you have added a prompt and saved your local `.tex` file, run the `local_client.py` script from your terminal:
+
+```bash
+python3 local_client.py path/to/your/local_file.tex \
+    --key YOUR_OPENROUTER_API_KEY \
+    --server YOUR_DEPLOYED_SERVER_URL \
+    --git-url https://git.overleaf.com/YOUR_PROJECT_ID \
+    --git-token YOUR_OVERLEAF_GIT_TOKEN \
+    --relative-path path/within/overleaf/project/file.tex
+```
+
+**Replace the placeholders:**
+*   `path/to/your/local_file.tex`: The path to the `.tex` file on your computer.
+*   `YOUR_OPENROUTER_API_KEY`: Your personal OpenRouter key.
+*   `YOUR_DEPLOYED_SERVER_URL`: The public URL of your server deployed in Step 1.
+*   `https://git.overleaf.com/YOUR_PROJECT_ID`: Your project's Git URL.
+*   `YOUR_OVERLEAF_GIT_TOKEN`: Your Overleaf Git token/password.
+*   `path/within/overleaf/project/file.tex`: The path of the file *relative to the root* of your Overleaf project (e.g., `main.tex`, `sections/intro.tex`).
+
+Add the `-v` or `--verbose` flag for detailed debugging output.
+
+### What Happens Next
+
+1.  The client reads your local file.
+2.  It finds the `user` block with `status=start`.
+3.  It calls the OpenRouter API with your prompt and key.
+4.  It updates your **local file**: 
+    *   The `status=start` is changed to `status=completed_<timestamp>`.
+    *   New `\begin{reasoning}` and `\begin{answer}` blocks containing the AI's response are inserted immediately after the updated `\end{user}` tag.
+5.  The client sends the entire modified content of your local file to the server's `/sync` endpoint.
+6.  The server acquires a lock (using Redis), clones the Overleaf repo, replaces the specified file with the content received from the client, commits, and pushes the changes back to Overleaf.
+
+
+## Original Workflow (Using `lc` script - Less Recommended Now)
+
+*(This section describes the older, more complex workflow involving direct local file watching and git operations via the `lc` script and `AgenticLatexGitPush.py`. This is less recommended than the Server + Local Client approach described above)*
+
 ## Overview
 
 LatexColab is a powerful tool that enables real-time collaboration with AI reasoning agents directly in your LaTeX documents. It maintains bidirectional synchronization between your local LaTeX files and Overleaf repositories, ensuring your work is always backed up and available.
